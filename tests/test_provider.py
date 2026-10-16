@@ -1,7 +1,9 @@
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 pytest.importorskip("stripe")
 import stripe  # noqa: E402
@@ -12,6 +14,15 @@ from orbit_payments_stripe import StripeConfig, StripePaymentProvider  # noqa: E
 
 def config() -> StripeConfig:
     return StripeConfig(api_key="sk_test_value", webhook_secret="whsec_value")
+
+
+def test_webhook_timestamp_tolerance_cannot_disable_replay_check() -> None:
+    with pytest.raises(ValidationError):
+        StripeConfig(
+            api_key="sk_test_value",
+            webhook_secret="whsec_value",
+            webhook_tolerance_seconds=0,
+        )
 
 
 class FakeStripeClient:
@@ -105,3 +116,90 @@ async def test_provider_requires_startup_without_injected_client() -> None:
     with pytest.raises(RuntimeError):
         await provider.get_payment("pi_123")
     await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_inflight_calls_before_closing_owned_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHTTPClient:
+        closed = False
+
+        async def close_async(self) -> None:
+            self.closed = True
+
+    class BlockingStripeClient(FakeStripeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def retrieve_payment(self, payment_id: str) -> dict[str, Any]:
+            self.started.set()
+            await self.release.wait()
+            return {
+                "id": payment_id,
+                "amount": 100,
+                "currency": "usd",
+                "status": "succeeded",
+                "metadata": {"orbit_reference": "order-1"},
+            }
+
+    http_client = FakeHTTPClient()
+    client = BlockingStripeClient()
+    monkeypatch.setattr(stripe, "HTTPXClient", lambda **_: http_client)
+    monkeypatch.setattr(stripe, "StripeClient", lambda *_, **__: client)
+
+    provider = StripePaymentProvider(config())
+    await provider.startup()
+    operation = asyncio.create_task(provider.get_payment("pi_123"))
+    await asyncio.wait_for(client.started.wait(), timeout=1)
+
+    shutdown = asyncio.create_task(provider.aclose())
+    await asyncio.sleep(0)
+    assert not shutdown.done()
+    assert not http_client.closed
+    with pytest.raises(RuntimeError, match="closed"):
+        await provider.get_payment("pi_456")
+
+    shutdown.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown
+    assert not http_client.closed
+
+    client.release.set()
+    await operation
+    await provider.aclose()
+    assert http_client.closed
+
+
+@pytest.mark.asyncio
+async def test_failed_http_transport_close_can_be_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed async transport close keeps the owned client handle for a later attempt."""
+
+    class FailOnceHTTPClient:
+        def __init__(self) -> None:
+            self.close_calls = 0
+            self.closed = False
+
+        async def close_async(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise RuntimeError("temporary close failure")
+            self.closed = True
+
+    http_client = FailOnceHTTPClient()
+    monkeypatch.setattr(stripe, "HTTPXClient", lambda **_: http_client)
+    monkeypatch.setattr(stripe, "StripeClient", lambda *_, **__: FakeStripeClient())
+    provider = StripePaymentProvider(config())
+    await provider.startup()
+
+    with pytest.raises(RuntimeError, match="could not be closed"):
+        await provider.aclose()
+    with pytest.raises(RuntimeError, match="closed"):
+        await provider.get_payment("pi_123")
+
+    await provider.aclose()
+    await provider.aclose()
+    assert http_client.closed
+    assert http_client.close_calls == 2

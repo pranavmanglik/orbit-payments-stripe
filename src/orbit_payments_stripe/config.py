@@ -30,11 +30,13 @@ class StripeConfig(BaseModel):
     webhook_secret: SecretStr
     timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     max_network_retries: int = Field(default=2, ge=0, le=5)
-    webhook_tolerance_seconds: int = Field(default=300, ge=0, le=3600)
+    # Stripe's SDK treats a falsey tolerance as "disable timestamp age checks".
+    webhook_tolerance_seconds: int = Field(default=300, ge=1, le=3600)
 
     @field_validator("api_key", "webhook_secret")
     @classmethod
     def validate_secret(cls, value: SecretStr) -> SecretStr:
+        """Reject empty API and webhook credentials after trimming whitespace."""
         if not value.get_secret_value().strip():
             raise ValueError("Stripe credentials must not be empty.")
         return value

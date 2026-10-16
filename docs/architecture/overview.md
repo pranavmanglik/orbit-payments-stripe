@@ -22,5 +22,8 @@ per-request options through a separately supported API.
 ## Resource ownership
 
 Call `startup()` before network methods and `aclose()` during shutdown, or use the provider as an
-async context manager. Injected SDK clients remain caller-owned. The package uses no module-global
-Stripe API key.
+async context manager. Shutdown rejects new network calls, drains operations already admitted by
+this provider, then closes its owned HTTPX transport. Cancelling a caller waiting for shutdown does
+not cancel transport cleanup; a later `aclose()` waits on that same cleanup task. Injected SDK
+clients remain caller-owned, and the provider still drains its active calls before returning from
+shutdown. The package uses no module-global Stripe API key.

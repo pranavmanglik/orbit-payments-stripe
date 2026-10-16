@@ -35,7 +35,7 @@ contains the PaymentIntent client secret and must be returned only through an au
 authorized application flow. Do not log or persist it unnecessarily.
 
 Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` through a secret manager. No credentials are
-provided by default. This is a pre-alpha integration; run Stripe test-mode checks for each account,
+provided by default. This is an alpha integration; run Stripe test-mode checks for each account,
 API version, payment-method configuration, and webhook endpoint before deployment.
 
 See [architecture](docs/architecture/overview.md), [operations](docs/operations/README.md),

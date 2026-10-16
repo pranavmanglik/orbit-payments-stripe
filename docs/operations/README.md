@@ -2,9 +2,11 @@
 
 Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` from a secret manager. Use separate Stripe
 test-mode and live-mode secrets in the correct environment. The adapter configures finite SDK
-timeouts, a bounded retry count, and an explicit asynchronous transport. The Stripe SDK provides
-request idempotency and retry behavior; the adapter uses stable merchant references for create and
-refund requests.
+timeouts, a bounded retry count, and an explicit asynchronous transport. Shutdown stops admitting
+new provider calls and waits for in-flight calls before closing the owned transport. A failed or
+cancelled transport close retains the handle for a later `aclose()` retry; the provider remains
+unavailable after shutdown starts. The Stripe SDK provides request idempotency and retry behavior;
+the adapter uses stable merchant references for create and refund requests.
 
 Webhooks should be handled on an application-owned route that passes the original bytes and
 `Stripe-Signature` header to `verify_webhook` before application parsing. The adapter does not
